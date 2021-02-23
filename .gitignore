@@ -1,0 +1,4 @@
+# ignore dirs
+**/build/
+**/build_*/
+**/.vscode/
