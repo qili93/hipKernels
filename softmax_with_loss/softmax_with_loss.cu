@@ -189,13 +189,92 @@ static __global__ void RowReductionForDiffMaxSum(const T* logits_data,
                   static_cast<float>(softmax[beg_idx]));
     beg_idx += step;
   }
+  KERNEL_PRINT("==0== max_data[blockIdx.x]=%f", static_cast<float>(max_data[blockIdx.x]));
 
   // Note(zhiqiu): since different threads may use max_data[blockIdx.x] to
   // calculate diff_max_sum, __syncthreads() is needed here.
   __syncthreads();
-  if (threadIdx.x == 0) max_data[blockIdx.x] = 0;
-  // KERNEL_PRINT("max_data[blockIdx.x]=%f", static_cast<float>(max_data[blockIdx.x]));
+  KERNEL_PRINT("==1== max_data[blockIdx.x]=%f", static_cast<float>(max_data[blockIdx.x]));
+  if (threadIdx.x == 0) {
+    max_data[blockIdx.x] = 0;
+    KERNEL_PRINT("==2== max_data[blockIdx.x]=%f", static_cast<float>(max_data[blockIdx.x]));
+  }
+  KERNEL_PRINT("==3== max_data[blockIdx.x]=%f", static_cast<float>(max_data[blockIdx.x]));
 }
+
+
+template <typename Function>
+__global__ static void ForRangeElemwiseOpGridIsOne(Function func) {
+  size_t idx = static_cast<size_t>(threadIdx.x);
+  func(idx);
+}
+
+template <typename Function>
+__global__ static void ForRangeElemwiseOp(Function func, int limit) {
+  size_t idx = static_cast<size_t>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (idx < limit) {
+    func(idx);
+  }
+}
+
+struct ForRange {
+  ForRange(size_t limit) : limit_(static_cast<int>(limit)) {}
+
+  template <typename Function>
+  inline void operator()(Function func) const {
+    constexpr int num_threads = 1024;
+    int block_size = limit_ <= num_threads ? limit_ : num_threads;
+    int grid_size = (limit_ + num_threads - 1) / num_threads;
+
+    if (grid_size == 1) {
+      ForRangeElemwiseOpGridIsOne<<<1, block_size, 0, 0>>>(func);
+    } else {
+      ForRangeElemwiseOp<<<grid_size, block_size, 0, 0>>>(func, limit_);
+    }
+  }
+
+  int limit_;
+};
+
+
+template <typename T>
+struct HardLabelSoftmaxWithCrossEntropyFunctor {
+ public:
+  HardLabelSoftmaxWithCrossEntropyFunctor(const int64_t* labels, T* loss,
+                                          T* log_softmax, int d, int axis_dim)
+      : labels_(labels),
+        loss_(loss),
+        log_softmax_(log_softmax),
+        d_(d),
+        axis_dim_(axis_dim) {}
+
+  __device__ void operator()(int idx) const {
+    // logits view as [n, axis_dim, remain], where d = axis_dim * remain
+    int remain = d_ / axis_dim_;
+    int idx_n = idx / d_;
+    int idx_axis = (idx % d_) / remain;
+    int idx_remain = idx % remain;
+    // labels, loss view as [n, remain]
+    int idx_lbl = idx_n * remain + idx_remain;
+    // It also would ignore labels not in range(class_num).
+    if (idx_axis != labels_[idx_lbl]) {
+      log_softmax_[idx] = exp_on_device(log_softmax_[idx]);
+    } else {
+      auto softmax = log_softmax_[idx];
+      log_softmax_[idx] = exp_on_device(softmax);
+      loss_[idx_lbl] = -softmax;
+    }
+  }
+
+ private:
+  const int64_t* labels_;
+  T* loss_;
+  T* log_softmax_;
+  int d_;
+  int axis_dim_;
+};
+
+template struct HardLabelSoftmaxWithCrossEntropyFunctor<float>;
 
 int main(void)
 {
@@ -215,7 +294,7 @@ int main(void)
 
   // input
   float * logit_cpu = new float[logit_numel];
-  float * label_cpu = new float[label_numel];
+  int64_t * label_cpu = new int64_t[label_numel];
   // output
   float * softmax_cpu = new float[logit_numel];
   float * loss_cpu = new float[label_numel];
@@ -227,18 +306,19 @@ int main(void)
     label_cpu[i] = i;
   }
   print_data_2d<float>(logit_cpu, logit_numel, logit_vec, "logit");
-  print_data_2d<float>(label_cpu, label_numel, label_vec, "label");
+  print_data_2d<int64_t>(label_cpu, label_numel, label_vec, "label");
 
-  float * logit_gpu, * label_gpu;
-  float * softmax_gpu, * loss_gpu;
+  float * logit_gpu;
+  int64_t * label_gpu;
+  float *softmax_gpu, *loss_gpu;
 
 #ifdef __HIPCC__
   hipMalloc((void **)&logit_gpu, logit_numel * sizeof(float));
-  hipMalloc((void **)&label_gpu, label_numel * sizeof(float));
+  hipMalloc((void **)&label_gpu, label_numel * sizeof(int64_t));
   hipMalloc((void **)&softmax_gpu, logit_numel * sizeof(float));
   hipMalloc((void **)&loss_gpu, label_numel * sizeof(float));
   hipMemcpy(logit_gpu, logit_cpu, logit_numel * sizeof(float), hipMemcpyHostToDevice);
-  hipMemcpy(label_gpu, label_cpu, label_numel * sizeof(float), hipMemcpyHostToDevice);
+  hipMemcpy(label_gpu, label_cpu, label_numel * sizeof(int64_t), hipMemcpyHostToDevice);
 
   hipLaunchKernelGGL(HIP_KERNEL_NAME(RowReductionForMax<float, block_dim>),
         dim3(grid_dim), dim3(block_dim), 0, 0,
@@ -247,23 +327,29 @@ int main(void)
         dim3(grid_dim), dim3(block_dim), 0, 0,
         logit_gpu, loss_gpu, softmax_gpu, d, axis_dim);
 
+  ForRange for_range(n * d);
+  for_range(HardLabelSoftmaxWithCrossEntropyFunctor<float>(label_gpu, loss_gpu, softmax_gpu, d, axis_dim));
+
   hipMemcpy(softmax_cpu, softmax_gpu, logit_numel * sizeof(float), hipMemcpyDeviceToHost);
-  hipMemcpy(loss_cpu, loss_gpu, label_numel * sizeof(uint8_t), hipMemcpyDeviceToHost);
+  hipMemcpy(loss_cpu, loss_gpu, label_numel * sizeof(float), hipMemcpyDeviceToHost);
 #else
   cudaMalloc((void **)&logit_gpu, logit_numel * sizeof(float));
   cudaMalloc((void **)&label_gpu, label_numel * sizeof(float));
   cudaMalloc((void **)&softmax_gpu, logit_numel * sizeof(float));
   cudaMalloc((void **)&loss_gpu, label_numel * sizeof(float));
   cudaMemcpy(logit_gpu, logit_cpu, logit_numel * sizeof(float), cudaMemcpyHostToDevice);
-  cudaMemcpy(label_gpu, label_cpu, label_numel * sizeof(float), cudaMemcpyHostToDevice);
+  cudaMemcpy(label_gpu, label_cpu, label_numel * sizeof(int64_t), cudaMemcpyHostToDevice);
 
   RowReductionForMax<float, block_dim><<<dim3(grid_dim), dim3(block_dim), 0, 0>>>(
         logit_gpu, loss_gpu, d, axis_dim);
   RowReductionForDiffMaxSum<float,  block_dim, true><<<dim3(grid_dim), dim3(block_dim), 0, 0>>>(
         logit_gpu, loss_gpu, softmax_gpu, d, axis_dim);
 
+  ForRange for_range(n * d);
+  for_range(HardLabelSoftmaxWithCrossEntropyFunctor<float>(label_gpu, loss_gpu, softmax_gpu, d, axis_dim));
+
   cudaMemcpy(softmax_cpu, softmax_gpu, logit_numel * sizeof(float), cudaMemcpyDeviceToHost);
-  cudaMemcpy(loss_cpu, loss_gpu, label_numel * sizeof(uint8_t), cudaMemcpyDeviceToHost);
+  cudaMemcpy(loss_cpu, loss_gpu, label_numel * sizeof(float), cudaMemcpyDeviceToHost);
 #endif
 
   print_data_2d<float>(softmax_cpu, logit_numel, logit_vec, "softmax");
