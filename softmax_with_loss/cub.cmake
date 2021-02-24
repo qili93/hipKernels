@@ -1,16 +1,9 @@
 include(ExternalProject)
 
-set(GIT_URL "https://github.com")
-
-set(CUB_PREFIX_DIR ${CMAKE_SOURCE_DIR}/cub)
-set(CUB_SOURCE_DIR ${CMAKE_SOURCE_DIR}/cub/src/extern_cub)
-set(CUB_REPOSITORY ${GIT_URL}/NVlabs/cub.git)
+set(CUB_PREFIX_DIR ${CMAKE_BINARY_DIR}/cub)
+set(CUB_SOURCE_DIR ${CMAKE_BINARY_DIR}/cub/src/extern_cub)
+set(CUB_REPOSITORY https://github.com/NVlabs/cub.git)
 set(CUB_TAG        1.8.0)
-
-cache_third_party(extern_cub
-    REPOSITORY    ${CUB_REPOSITORY}
-    TAG           ${CUB_TAG}
-    DIR           CUB_SOURCE_DIR)
 
 SET(CUB_INCLUDE_DIR   ${CUB_SOURCE_DIR})
 include_directories(${CUB_INCLUDE_DIR})
@@ -25,16 +18,15 @@ SET(EXTERNAL_PROJECT_LOG_ARGS
     LOG_INSTALL     0     # Wrap install in script to log output
 )
 
-set(SHALLOW_CLONE "GIT_SHALLOW TRUE") # adds --depth=1 arg to git clone of External_Projects
-
 ExternalProject_Add(
   extern_cub
   ${EXTERNAL_PROJECT_LOG_ARGS}
-  ${SHALLOW_CLONE}
-  "${CUB_DOWNLOAD_CMD}"
+  GIT_SHALLOW     TRUE
+  GIT_REPOSITORY  https://github.com/NVlabs/cub.git
+  GIT_TAG         1.8.0
   PREFIX          ${CUB_PREFIX_DIR}
   SOURCE_DIR      ${CUB_SOURCE_DIR}
-  UPDATE_COMMAND ""
+  UPDATE_COMMAND    ""
   CONFIGURE_COMMAND ""
   BUILD_COMMAND     ""
   INSTALL_COMMAND   ""
@@ -42,5 +34,4 @@ ExternalProject_Add(
 )
 
 add_library(cub INTERFACE)
-cub
 add_dependencies(cub extern_cub)

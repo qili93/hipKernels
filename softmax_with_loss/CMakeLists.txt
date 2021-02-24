@@ -100,7 +100,12 @@ target_link_libraries(main ${ROCM_HIPRTC_LIB})
 
 else() # for CUDA
 
-include(cub)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
+set(CMAKE_CXX_FLAGS_DEBUG "-fPIC -O0 -g -Wall")
+set(CMAKE_CXX_FLAGS_RELEASE "-fPIC -O2 -Wall")
+
+# include(ExternalProject)
+include(${CMAKE_SOURCE_DIR}/cub.cmake)
 
 FIND_PACKAGE(CUDA REQUIRED)
 include_directories(${CUDA_INCLUDE_DIRS})
