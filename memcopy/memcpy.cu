@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <iostream>
+#include <vector>
 
 #ifdef __HIPCC__
 #include <hip/hip_runtime.h>
@@ -10,14 +11,8 @@
 template <typename T>
 void TestMemcpy() {
     const size_t numel = 16;
-    int * cpu_indata = new int[numel];
-    int * cpu_outdata = new int[numel];
-    for (unsigned i = 0; i < numel; i++) {
-        cpu_indata[i] = i;
-    }
-    for (unsigned i = 0; i < numel; i++) {
-        cpu_outdata[i] = 0;
-    }
+    std::vector<T> cpu_indata(numel, 5);
+    std::vector<T> cpu_outdata(numel, 0);
 
     std::cout << "cpu_indata = [";
     for (unsigned i = 0; i < numel; i++) {
@@ -33,18 +28,18 @@ void TestMemcpy() {
     int *gpu_data;
 #ifdef __HIPCC__
     hipMalloc((void**)&gpu_data, numel * sizeof(T));
-    hipMemcpy(gpu_data, cpu_indata, numel * sizeof(T), hipMemcpyHostToDevice);
+    hipMemcpy(gpu_data, cpu_indata.data(), numel * sizeof(T), hipMemcpyHostToDevice);
 
     hipDeviceSynchronize();
 
-    hipMemcpy(cpu_outdata, gpu_data, numel * sizeof(T), hipMemcpyDeviceToHost);
+    hipMemcpy(cpu_outdata.data(), gpu_data, numel * sizeof(T), hipMemcpyDeviceToHost);
 #else
     cudaMalloc((void**)&gpu_data, numel * sizeof(T));
-    cudaMemcpy(gpu_data, cpu_indata, numel * sizeof(T), cudaMemcpyHostToDevice);
+    cudaMemcpy(gpu_data, cpu_indata.data(), numel * sizeof(T), cudaMemcpyHostToDevice);
 
     cudaDeviceSynchronize();
 
-    cudaMemcpy(cpu_outdata, gpu_data, numel * sizeof(T), cudaMemcpyDeviceToHost);
+    cudaMemcpy(cpu_outdata.data(), gpu_data, numel * sizeof(T), cudaMemcpyDeviceToHost);
 #endif
 
     std::cout << "cpu_outdata = [";
